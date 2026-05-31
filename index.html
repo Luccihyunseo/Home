@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Shapefall Gesture Playground</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app" aria-label="Shapefall gesture playground">
+      <video id="camera" class="camera" playsinline muted></video>
+      <canvas id="stage" aria-label="interactive falling shape canvas"></canvas>
+
+      <section class="hud" aria-label="controls">
+        <div class="brand">
+          <span class="brand__mark"></span>
+          <span>Shapefall</span>
+        </div>
+        <div class="status-row" aria-live="polite">
+          <span id="cameraStatus" class="status-chip">Camera off</span>
+          <span id="gestureStatus" class="status-chip status-chip--hot">Draw ready</span>
+          <span id="soundStatus" class="status-chip">Mic off</span>
+        </div>
+      </section>
+
+      <section class="dock" aria-label="action controls">
+        <button id="cameraButton" class="icon-button" type="button" title="Camera">
+          <span class="icon icon-camera" aria-hidden="true"></span>
+          <span class="sr-only">Camera</span>
+        </button>
+        <button id="micButton" class="icon-button" type="button" title="Blow">
+          <span class="icon icon-mic" aria-hidden="true"></span>
+          <span class="sr-only">Blow</span>
+        </button>
+        <button id="clearButton" class="reset-button" type="button" title="Reset">
+          Reset
+        </button>
+      </section>
+
+      <aside class="lens" aria-hidden="true">
+        <canvas id="lensCanvas"></canvas>
+      </aside>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

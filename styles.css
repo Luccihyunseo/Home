@@ -56,7 +56,7 @@ button {
   inset: 0;
   width: 100%;
   height: 100%;
-  cursor: crosshair;
+  cursor: none;
   touch-action: none;
 }
 
@@ -75,27 +75,6 @@ button {
   background: var(--panel);
   backdrop-filter: blur(16px);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
-}
-
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: max-content;
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 13px;
-  font-weight: 750;
-  letter-spacing: 0;
-}
-
-.brand__mark {
-  width: 13px;
-  height: 13px;
-  background:
-    linear-gradient(90deg, var(--lime) 0 45%, transparent 45% 55%, var(--pink) 55%),
-    linear-gradient(0deg, transparent 0 42%, var(--blue) 42% 58%, transparent 58%);
-  box-shadow: 0 0 16px rgba(184, 255, 44, 0.62);
-  transform: rotate(45deg);
 }
 
 .status-row {
@@ -130,7 +109,7 @@ button {
   left: 50%;
   bottom: max(18px, env(safe-area-inset-bottom));
   display: grid;
-  grid-template-columns: 44px 44px minmax(74px, auto);
+  grid-template-columns: 44px minmax(74px, auto);
   gap: 8px;
   align-items: center;
   padding: 8px;
@@ -211,30 +190,6 @@ button {
   border: 2px solid currentColor;
   border-radius: 50%;
   box-shadow: 7px -5px 0 -3px currentColor;
-}
-
-.icon-mic::before {
-  position: absolute;
-  left: 6px;
-  top: 1px;
-  width: 8px;
-  height: 12px;
-  content: "";
-  border: 2px solid currentColor;
-  border-radius: 7px;
-}
-
-.icon-mic::after {
-  position: absolute;
-  left: 3px;
-  top: 9px;
-  width: 14px;
-  height: 8px;
-  content: "";
-  border: solid currentColor;
-  border-width: 0 2px 2px;
-  border-radius: 0 0 10px 10px;
-  box-shadow: 5px 8px 0 -3px currentColor;
 }
 
 .lens {

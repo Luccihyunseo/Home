@@ -1,3 +1,5 @@
+import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest";
+
 const canvas = document.getElementById("stage");
 const ctx = canvas.getContext("2d", { alpha: false });
 const video = document.getElementById("camera");
@@ -5,11 +7,9 @@ const lensCanvas = document.getElementById("lensCanvas");
 const lensCtx = lensCanvas.getContext("2d");
 
 const cameraButton = document.getElementById("cameraButton");
-const micButton = document.getElementById("micButton");
 const clearButton = document.getElementById("clearButton");
 const cameraStatus = document.getElementById("cameraStatus");
 const gestureStatus = document.getElementById("gestureStatus");
-const soundStatus = document.getElementById("soundStatus");
 
 const DPR_LIMIT = 2;
 const palette = [
@@ -30,30 +30,27 @@ const state = {
   bodies: [],
   particles: [],
   sparks: [],
-  trail: [],
-  drawing: false,
-  pointerDown: false,
   lastPoint: null,
   lastTime: performance.now(),
   cameraReady: false,
-  micReady: false,
-  blowCooldown: 0,
+  handLandmarker: null,
+  handLandmarkerReady: false,
+  handLandmarkerLoading: false,
+  handLandmarkerPromise: null,
   gestureCooldown: 0,
   bgWisps: [],
   tracker: {
-    sample: document.createElement("canvas"),
-    previous: null,
     point: null,
     lastPoint: null,
     velocity: 0,
     lostFrames: 0,
     frameSkip: 0,
+    pinchHold: 0,
+    pinching: false,
+    landmarks: null,
+    pinchRatio: Infinity,
   },
 };
-
-const trackerCtx = state.tracker.sample.getContext("2d", {
-  willReadFrequently: true,
-});
 
 function resize() {
   state.dpr = Math.min(window.devicePixelRatio || 1, DPR_LIMIT);
@@ -102,172 +99,31 @@ function distance(a, b) {
   return Math.hypot(dx, dy);
 }
 
-function normalizePath(points, maxPoints = 130) {
-  if (points.length <= maxPoints) return points.slice();
-  const step = points.length / maxPoints;
-  const out = [];
-  for (let i = 0; i < maxPoints; i += 1) {
-    out.push(points[Math.floor(i * step)]);
-  }
-  return out;
+function randomShapeType() {
+  const types = ["circle", "square", "star"];
+  return types[Math.floor(Math.random() * types.length)];
 }
 
-function pathBounds(points) {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const p of points) {
-    minX = Math.min(minX, p.x);
-    minY = Math.min(minY, p.y);
-    maxX = Math.max(maxX, p.x);
-    maxY = Math.max(maxY, p.y);
-  }
-  return {
-    minX,
-    minY,
-    maxX,
-    maxY,
-    width: maxX - minX,
-    height: maxY - minY,
-    cx: (minX + maxX) / 2,
-    cy: (minY + maxY) / 2,
-  };
-}
-
-function polygonArea(points) {
-  let sum = 0;
-  for (let i = 0; i < points.length; i += 1) {
-    const a = points[i];
-    const b = points[(i + 1) % points.length];
-    sum += a.x * b.y - b.x * a.y;
-  }
-  return Math.abs(sum) / 2;
-}
-
-function pathLength(points) {
-  let total = 0;
-  for (let i = 1; i < points.length; i += 1) {
-    total += distance(points[i - 1], points[i]);
-  }
-  return total;
-}
-
-function countCorners(points, bounds) {
-  const simplified = normalizePath(points, 28);
-  let corners = 0;
-  const minTurn = Math.PI * 0.34;
-  const minSide = Math.max(10, Math.min(bounds.width, bounds.height) * 0.12);
-
-  for (let i = 1; i < simplified.length - 1; i += 1) {
-    const a = simplified[i - 1];
-    const b = simplified[i];
-    const c = simplified[i + 1];
-    if (distance(a, b) < minSide || distance(b, c) < minSide) continue;
-    const ab = Math.atan2(b.y - a.y, b.x - a.x);
-    const bc = Math.atan2(c.y - b.y, c.x - b.x);
-    let turn = Math.abs(ab - bc);
-    if (turn > Math.PI) turn = Math.PI * 2 - turn;
-    if (turn > minTurn) corners += 1;
-  }
-  return corners;
-}
-
-function radialExtrema(points, bounds) {
-  const center = { x: bounds.cx, y: bounds.cy };
-  const sample = normalizePath(points, 48).map((p) => distance(p, center));
-  let peaks = 0;
-  for (let i = 1; i < sample.length - 1; i += 1) {
-    if (sample[i] > sample[i - 1] && sample[i] > sample[i + 1]) {
-      const localAverage = (sample[i - 1] + sample[i + 1]) / 2;
-      if (sample[i] > localAverage * 1.12) peaks += 1;
-    }
-  }
-  return peaks;
-}
-
-function recognizeShape(points) {
-  const clean = normalizePath(points.filter(Boolean), 160);
-  const bounds = pathBounds(clean);
-  const minSize = Math.min(bounds.width, bounds.height);
-  const maxSize = Math.max(bounds.width, bounds.height);
-  const closed = distance(clean[0], clean[clean.length - 1]) < Math.max(26, maxSize * 0.28);
-  const area = polygonArea(clean);
-  const length = pathLength(clean);
-  const circularity = length > 0 ? (4 * Math.PI * area) / (length * length) : 0;
-  const ratio = minSize / Math.max(1, maxSize);
-  const corners = countCorners(clean, bounds);
-  const peaks = radialExtrema(clean, bounds);
-
-  if (closed && peaks >= 5 && corners >= 6) return "star";
-  if (closed && ratio > 0.72 && circularity > 0.55 && corners < 7) return "circle";
-  if (closed && ratio > 0.62 && corners >= 3 && corners <= 8) return "square";
-  if (!closed && corners >= 5 && peaks >= 4) return "star";
-  return "free";
-}
-
-function startDrawing(point) {
+function triggerPinch(point) {
   if (!point || state.gestureCooldown > 0) return;
-  state.drawing = true;
-  state.trail = [point];
-  state.lastPoint = point;
-  gestureStatus.textContent = "Drawing";
-  gestureStatus.classList.add("status-chip--hot");
-  addSpark(point.x, point.y, 10, 0.65);
-}
-
-function addPoint(point, source = "pointer") {
-  if (!point) return;
-  const now = performance.now();
-  if (!state.drawing) {
-    if (source === "pointer" || state.tracker.velocity > 46) {
-      startDrawing(point);
-    }
-    return;
-  }
-
-  const last = state.trail[state.trail.length - 1];
-  if (!last || distance(last, point) > 4) {
-    state.trail.push({ ...point, t: now });
-    state.lastPoint = point;
-    if (Math.random() > 0.6) addParticle(point.x, point.y, 1, 0.42);
-  }
-
-  const enoughPath = state.trail.length > 26 && pathLength(state.trail) > 130;
-  const closeEnough =
-    enoughPath &&
-    distance(state.trail[0], state.trail[state.trail.length - 1]) <
-      Math.max(30, Math.min(state.width, state.height) * 0.045);
-
-  if (closeEnough) {
-    finishDrawing();
-  }
-}
-
-function finishDrawing(force = false) {
-  if (!state.drawing || state.trail.length < 8) {
-    state.drawing = false;
-    return;
-  }
-
-  const bounds = pathBounds(state.trail);
-  if (!force && Math.max(bounds.width, bounds.height) < 42) return;
-
-  const type = recognizeShape(state.trail);
-  const size = clamp(Math.max(bounds.width, bounds.height) * 0.44, 34, 118);
-  const x = state.width / 2 + (Math.random() - 0.5) * Math.min(110, state.width * 0.16);
-  const y = Math.max(88, state.height * 0.22);
+  const type = randomShapeType();
+  const size = 46 + Math.random() * 72;
   const color = randomColor();
-
-  spawnShape(type, x, y, size, color);
-  burst(x, y, color, type === "free" ? 18 : 28);
-  state.drawing = false;
-  state.trail = [];
-  state.gestureCooldown = 0.32;
-  gestureStatus.textContent = `${type.toUpperCase()} made`;
+  spawnShape(type, point.x, point.y, size, color);
+  burst(point.x, point.y, color, 20);
+  addSpark(point.x, point.y, 12, 0.62);
+  state.gestureCooldown = 0.58;
+  gestureStatus.textContent = "Pinch point";
   setTimeout(() => {
-    if (!state.drawing) gestureStatus.textContent = "Draw ready";
-  }, 900);
+    gestureStatus.textContent = "Pinch ready";
+  }, 720);
+}
+
+function emitScatterTrail(point, velocity = 0) {
+  if (!point) return;
+  const intensity = clamp(velocity / 900, 0.2, 0.9);
+  const count = velocity > 220 ? 2 : 1;
+  if (Math.random() < 0.55) addParticle(point.x, point.y, count, intensity);
 }
 
 function spawnShape(type, x, y, size, color) {
@@ -287,20 +143,10 @@ function spawnShape(type, x, y, size, color) {
     av: (Math.random() - 0.5) * 2.4,
     life: 1,
     wobble: Math.random() * Math.PI * 2,
-    path: type === "free" ? normalizeFreePath(state.trail, size) : null,
   };
 
   state.bodies.push(body);
   if (state.bodies.length > 130) state.bodies.splice(0, state.bodies.length - 130);
-}
-
-function normalizeFreePath(points, size) {
-  const bounds = pathBounds(points);
-  const scale = size / Math.max(bounds.width, bounds.height, 1);
-  return normalizePath(points, 60).map((p) => ({
-    x: (p.x - bounds.cx) * scale,
-    y: (p.y - bounds.cy) * scale,
-  }));
 }
 
 function addParticle(x, y, count = 1, intensity = 1) {
@@ -359,21 +205,6 @@ function burst(x, y, color, count) {
       av: (Math.random() - 0.5) * 10,
     });
   }
-}
-
-function scatterBodies(power = 1) {
-  const center = { x: state.width / 2, y: state.height * 0.72 };
-  for (const body of state.bodies) {
-    const dx = body.x - center.x || Math.random() - 0.5;
-    const dy = body.y - center.y || Math.random() - 0.5;
-    const len = Math.hypot(dx, dy) || 1;
-    const impulse = (360 + Math.random() * 420) * power;
-    body.vx += (dx / len) * impulse + (Math.random() - 0.5) * 220;
-    body.vy += -Math.abs(dy / len) * impulse - 180 - Math.random() * 260;
-    body.av += (Math.random() - 0.5) * 7;
-    burst(body.x, body.y, body.color, 10);
-  }
-  soundStatus.textContent = "Blow";
 }
 
 function updatePhysics(dt) {
@@ -517,8 +348,6 @@ function drawShape(body) {
   } else if (body.type === "star") {
     drawStar(0, 0, body.size * 0.46, body.size * 0.18, 8);
     ctx.fill();
-  } else {
-    drawFree(body.path, body.color);
   }
 
   ctx.shadowBlur = 0;
@@ -549,19 +378,6 @@ function drawStar(x, y, outer, inner, points) {
   ctx.closePath();
 }
 
-function drawFree(path, color) {
-  if (!path || path.length < 2) return;
-  ctx.strokeStyle = color;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.beginPath();
-  ctx.moveTo(path[0].x, path[0].y);
-  for (let i = 1; i < path.length; i += 1) {
-    ctx.lineTo(path[i].x, path[i].y);
-  }
-  ctx.stroke();
-}
-
 function drawParticle(particle) {
   const alpha = clamp(particle.life / particle.maxLife, 0, 1);
   ctx.save();
@@ -590,32 +406,6 @@ function drawParticle(particle) {
     ctx.beginPath();
     ctx.arc(0, 0, particle.size * 0.5, 0, Math.PI * 2);
     ctx.fill();
-  }
-  ctx.restore();
-}
-
-function drawTrail() {
-  if (!state.trail.length) return;
-  ctx.save();
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.shadowColor = "#19b8ff";
-  ctx.shadowBlur = 16;
-  ctx.strokeStyle = "rgba(245,247,255,0.92)";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(state.trail[0].x, state.trail[0].y);
-  for (let i = 1; i < state.trail.length; i += 1) {
-    const p = state.trail[i];
-    ctx.lineTo(p.x, p.y);
-  }
-  ctx.stroke();
-
-  for (let i = 0; i < state.trail.length; i += 8) {
-    const p = state.trail[i];
-    ctx.fillStyle = palette[(i / 8) % palette.length | 0];
-    ctx.globalAlpha = 0.86;
-    ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
   }
   ctx.restore();
 }
@@ -664,7 +454,6 @@ function render(dt) {
   }
 
   for (const body of state.bodies) drawShape(body);
-  drawTrail();
   drawCursor(state.tracker.point);
 }
 
@@ -672,7 +461,6 @@ function animate(now) {
   const dt = Math.min(0.033, (now - state.lastTime) / 1000 || 0.016);
   state.lastTime = now;
   state.gestureCooldown = Math.max(0, state.gestureCooldown - dt);
-  state.blowCooldown = Math.max(0, state.blowCooldown - dt);
 
   updateTracker();
   updatePhysics(dt);
@@ -690,32 +478,7 @@ function pointerPoint(event) {
   };
 }
 
-canvas.addEventListener("pointerdown", (event) => {
-  state.pointerDown = true;
-  canvas.setPointerCapture(event.pointerId);
-  startDrawing(pointerPoint(event));
-});
-
-canvas.addEventListener("pointermove", (event) => {
-  if (!state.pointerDown) return;
-  addPoint(pointerPoint(event), "pointer");
-});
-
-canvas.addEventListener("pointerup", (event) => {
-  if (state.pointerDown) {
-    addPoint(pointerPoint(event), "pointer");
-    finishDrawing(true);
-  }
-  state.pointerDown = false;
-});
-
-canvas.addEventListener("pointercancel", () => {
-  state.pointerDown = false;
-  finishDrawing(true);
-});
-
 window.addEventListener("keydown", (event) => {
-  if (event.key.toLowerCase() === "b") scatterBodies(0.85);
   if (event.key.toLowerCase() === "r") clearScene();
 });
 
@@ -723,9 +486,9 @@ function clearScene() {
   state.bodies = [];
   state.particles = [];
   state.sparks = [];
-  state.trail = [];
-  state.drawing = false;
-  gestureStatus.textContent = "Draw ready";
+  state.tracker.pinching = false;
+  state.tracker.pinchHold = 0;
+  gestureStatus.textContent = "Pinch ready";
   addSpark(state.width / 2, state.height - 90, 16, 0.55);
 }
 
@@ -739,14 +502,6 @@ cameraButton.addEventListener("click", async () => {
   }
 });
 
-micButton.addEventListener("click", async () => {
-  if (state.micReady) {
-    stopMic();
-  } else {
-    await startMic();
-  }
-});
-
 async function startCamera() {
   if (!navigator.mediaDevices?.getUserMedia) {
     cameraStatus.textContent = "No camera";
@@ -754,6 +509,7 @@ async function startCamera() {
   }
 
   try {
+    await ensureHandLandmarker();
     const stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: "user",
@@ -767,8 +523,9 @@ async function startCamera() {
     state.cameraReady = true;
     cameraButton.classList.add("is-active");
     cameraStatus.textContent = "Camera on";
+    gestureStatus.textContent = "Pinch ready";
   } catch (error) {
-    cameraStatus.textContent = "Camera blocked";
+    cameraStatus.textContent = state.handLandmarkerReady ? "Camera blocked" : "Model blocked";
   }
 }
 
@@ -779,144 +536,117 @@ function stopCamera() {
   }
   video.srcObject = null;
   state.cameraReady = false;
-  state.tracker.previous = null;
   state.tracker.point = null;
+  state.tracker.landmarks = null;
   cameraButton.classList.remove("is-active");
   cameraStatus.textContent = "Camera off";
   lensCtx.clearRect(0, 0, lensCanvas.width, lensCanvas.height);
 }
 
-let audioContext;
-let analyser;
-let micStream;
-let micData;
+async function ensureHandLandmarker() {
+  if (state.handLandmarkerReady) return;
+  if (state.handLandmarkerPromise) return state.handLandmarkerPromise;
 
-async function startMic() {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    soundStatus.textContent = "No mic";
-    return;
-  }
+  state.handLandmarkerLoading = true;
+  cameraStatus.textContent = "Loading model";
+  state.handLandmarkerPromise = (async () => {
+    try {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm",
+      );
+      const options = {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numHands: 1,
+        minHandDetectionConfidence: 0.58,
+        minHandPresenceConfidence: 0.58,
+        minTrackingConfidence: 0.62,
+      };
 
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    audioContext = new AudioContext();
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 1024;
-    audioContext.createMediaStreamSource(micStream).connect(analyser);
-    micData = new Uint8Array(analyser.frequencyBinCount);
-    state.micReady = true;
-    micButton.classList.add("is-active");
-    soundStatus.textContent = "Mic on";
-    monitorMic();
-  } catch (error) {
-    soundStatus.textContent = "Mic blocked";
-  }
-}
-
-function stopMic() {
-  if (micStream) {
-    for (const track of micStream.getTracks()) track.stop();
-  }
-  if (audioContext) audioContext.close();
-  micStream = null;
-  audioContext = null;
-  analyser = null;
-  state.micReady = false;
-  micButton.classList.remove("is-active");
-  soundStatus.textContent = "Mic off";
-}
-
-function monitorMic() {
-  if (!state.micReady || !analyser) return;
-  analyser.getByteTimeDomainData(micData);
-  let sum = 0;
-  let peak = 0;
-  for (const value of micData) {
-    const centered = Math.abs(value - 128) / 128;
-    sum += centered * centered;
-    peak = Math.max(peak, centered);
-  }
-  const rms = Math.sqrt(sum / micData.length);
-  if ((rms > 0.12 || peak > 0.52) && state.blowCooldown <= 0) {
-    state.blowCooldown = 1.2;
-    scatterBodies(clamp(rms * 5.5, 0.7, 1.6));
-  } else if (state.blowCooldown <= 0.1) {
-    soundStatus.textContent = "Mic on";
-  }
-  requestAnimationFrame(monitorMic);
-}
-
-function updateTracker() {
-  if (!state.cameraReady || video.readyState < 2) return;
-  state.tracker.frameSkip = (state.tracker.frameSkip + 1) % 2;
-  if (state.tracker.frameSkip) return;
-
-  const sampleWidth = 112;
-  const sampleHeight = 84;
-  state.tracker.sample.width = sampleWidth;
-  state.tracker.sample.height = sampleHeight;
-  trackerCtx.save();
-  trackerCtx.scale(-1, 1);
-  trackerCtx.drawImage(video, -sampleWidth, 0, sampleWidth, sampleHeight);
-  trackerCtx.restore();
-
-  const frame = trackerCtx.getImageData(0, 0, sampleWidth, sampleHeight);
-  const data = frame.data;
-  const previous = state.tracker.previous;
-  let total = 0;
-  let sx = 0;
-  let sy = 0;
-  let best = null;
-
-  for (let y = 0; y < sampleHeight; y += 2) {
-    for (let x = 0; x < sampleWidth; x += 2) {
-      const index = (y * sampleWidth + x) * 4;
-      const r = data[index];
-      const g = data[index + 1];
-      const b = data[index + 2];
-      const brightness = (r + g + b) / 3;
-      let motion = 0;
-      if (previous) {
-        motion =
-          Math.abs(r - previous[index]) +
-          Math.abs(g - previous[index + 1]) +
-          Math.abs(b - previous[index + 2]);
+      try {
+        state.handLandmarker = await HandLandmarker.createFromOptions(vision, options);
+      } catch (error) {
+        options.baseOptions.delegate = "CPU";
+        state.handLandmarker = await HandLandmarker.createFromOptions(vision, options);
       }
+      state.handLandmarkerReady = true;
+    } finally {
+      state.handLandmarkerLoading = false;
+      state.handLandmarkerPromise = null;
+    }
+  })();
+  return state.handLandmarkerPromise;
+}
 
-      const skinish = r > 72 && g > 46 && b > 34 && r > b * 1.08 && r > g * 0.82;
-      const saturated = Math.max(r, g, b) - Math.min(r, g, b) > 36;
-      const score = motion * 0.72 + (skinish ? 42 : 0) + (saturated ? 14 : 0) + brightness * 0.04;
+function landmarkDistance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y, (a.z - b.z) * 0.34);
+}
 
-      if (score > 52) {
-        const weight = Math.min(255, score);
-        total += weight;
-        sx += x * weight;
-        sy += y * weight;
-        if (!best || score > best.score || y < best.y - 4) best = { x, y, score };
-      }
+function mirroredPoint(landmark) {
+  return {
+    x: (1 - landmark.x) * state.width,
+    y: landmark.y * state.height,
+    t: performance.now(),
+  };
+}
+
+function detectPinch(pinchRatio, point) {
+  const pinchCandidate = pinchRatio < 0.42 && state.tracker.velocity < 1250;
+
+  if (pinchCandidate) {
+    state.tracker.pinchHold += 1;
+    gestureStatus.textContent = "Pinching";
+  } else {
+    state.tracker.pinchHold = Math.max(0, state.tracker.pinchHold - 1);
+    if (!state.tracker.pinching && state.gestureCooldown <= 0) {
+      gestureStatus.textContent = "Pinch ready";
     }
   }
 
-  drawLens(frame, sampleWidth, sampleHeight, best, previous);
-  state.tracker.previous = new Uint8ClampedArray(data);
+  if (state.tracker.pinchHold >= 4 && !state.tracker.pinching) {
+    state.tracker.pinching = true;
+    triggerPinch(point);
+  }
 
-  if (total < 1600) {
+  if (!pinchCandidate && state.tracker.pinching) {
+    state.tracker.pinching = false;
+  }
+}
+
+function updateTracker() {
+  if (!state.cameraReady || !state.handLandmarkerReady || video.readyState < 2) return;
+  state.tracker.frameSkip = (state.tracker.frameSkip + 1) % 2;
+  if (state.tracker.frameSkip) return;
+
+  const results = state.handLandmarker.detectForVideo(video, performance.now());
+  const landmarks = results.landmarks?.[0];
+  state.tracker.landmarks = landmarks || null;
+  drawLens(landmarks);
+
+  if (!landmarks) {
     state.tracker.lostFrames += 1;
     if (state.tracker.lostFrames > 8) {
       state.tracker.point = null;
-      if (state.drawing && !state.pointerDown) finishDrawing(true);
+      state.tracker.pinching = false;
+      state.tracker.pinchHold = 0;
+      if (state.gestureCooldown <= 0) gestureStatus.textContent = "Pinch ready";
     }
     return;
   }
 
   state.tracker.lostFrames = 0;
-  const centroid = { x: sx / total, y: sy / total };
-  const selected = best ? { x: best.x * 0.58 + centroid.x * 0.42, y: best.y * 0.62 + centroid.y * 0.38 } : centroid;
-  const point = {
-    x: (selected.x / sampleWidth) * state.width,
-    y: (selected.y / sampleHeight) * state.height,
-    t: performance.now(),
-  };
+  const indexTip = landmarks[8];
+  const thumbTip = landmarks[4];
+  const wrist = landmarks[0];
+  const middleBase = landmarks[9];
+  const palmScale = Math.max(0.001, landmarkDistance(wrist, middleBase));
+  const pinchRatio = landmarkDistance(indexTip, thumbTip) / palmScale;
+  const point = mirroredPoint(indexTip);
+  state.tracker.pinchRatio = pinchRatio;
 
   const last = state.tracker.lastPoint;
   if (last) {
@@ -934,15 +664,11 @@ function updateTracker() {
     : point;
 
   state.tracker.point = smoothed;
-  addPoint(smoothed, "camera");
-
-  if (state.drawing && state.trail.length > 46) {
-    const age = performance.now() - (state.trail[0].t || performance.now());
-    if (age > 3200) finishDrawing(true);
-  }
+  emitScatterTrail(smoothed, state.tracker.velocity);
+  detectPinch(pinchRatio, smoothed);
 }
 
-function drawLens(frame, width, height, best, previous) {
+function drawLens(landmarks) {
   lensCtx.clearRect(0, 0, lensCanvas.width, lensCanvas.height);
   lensCtx.save();
   lensCtx.scale(-1, 1);
@@ -951,33 +677,31 @@ function drawLens(frame, width, height, best, previous) {
   lensCtx.fillStyle = "rgba(8, 9, 11, 0.42)";
   lensCtx.fillRect(0, 0, lensCanvas.width, lensCanvas.height);
 
-  const data = frame.data;
-  const scaleX = lensCanvas.width / width;
-  const scaleY = lensCanvas.height / height;
-  for (let y = 0; y < height; y += 4) {
-    for (let x = 0; x < width; x += 4) {
-      const index = (y * width + x) * 4;
-      const r = data[index];
-      const g = data[index + 1];
-      const b = data[index + 2];
-      const motion = previous
-        ? Math.abs(r - previous[index]) +
-          Math.abs(g - previous[index + 1]) +
-          Math.abs(b - previous[index + 2])
-        : 0;
-      if (motion > 70) {
-        lensCtx.fillStyle = palette[(x + y) % palette.length];
-        lensCtx.fillRect(x * scaleX, y * scaleY, 3, 3);
-      }
-    }
+  if (!landmarks) return;
+
+  const connections = [
+    [0, 1], [1, 2], [2, 3], [3, 4],
+    [0, 5], [5, 6], [6, 7], [7, 8],
+    [5, 9], [9, 10], [10, 11], [11, 12],
+    [9, 13], [13, 14], [14, 15], [15, 16],
+    [13, 17], [17, 18], [18, 19], [19, 20], [0, 17],
+  ];
+
+  lensCtx.strokeStyle = "rgba(184, 255, 44, 0.74)";
+  lensCtx.lineWidth = 1.4;
+  for (const [a, b] of connections) {
+    lensCtx.beginPath();
+    lensCtx.moveTo((1 - landmarks[a].x) * lensCanvas.width, landmarks[a].y * lensCanvas.height);
+    lensCtx.lineTo((1 - landmarks[b].x) * lensCanvas.width, landmarks[b].y * lensCanvas.height);
+    lensCtx.stroke();
   }
 
-  if (best) {
-    lensCtx.strokeStyle = "#b8ff2c";
-    lensCtx.lineWidth = 2;
+  for (let i = 0; i < landmarks.length; i += 1) {
+    const point = landmarks[i];
+    lensCtx.fillStyle = i === 4 || i === 8 ? "#b8ff2c" : "rgba(245, 247, 255, 0.82)";
     lensCtx.beginPath();
-    lensCtx.arc(best.x * scaleX, best.y * scaleY, 9, 0, Math.PI * 2);
-    lensCtx.stroke();
+    lensCtx.arc((1 - point.x) * lensCanvas.width, point.y * lensCanvas.height, i === 4 || i === 8 ? 5 : 2.8, 0, Math.PI * 2);
+    lensCtx.fill();
   }
 }
 
